@@ -215,12 +215,43 @@ String _buildInjectScript(String firstPassword) => '''
     }
   }
 
-  // 取解析密码：站点结果页把有/无密码放在同一个元素上 ——
-  // 有密码时 class="pwd"，无密码时 class="empty"，据此区分。
+  // 站点结果页现在只渲染掩码（如 ••••••••••），明文仅存在页面全局变量里：
+  //   服务端下发加密 payload，页面用 WebCrypto 在本地解密后写入 currentParsePwd，
+  //   密码框只为「复制按钮」服务。读 DOM 文本只会拿到圆点，必须读变量。
+  //
+  // 注意：站点的密钥派生参与环境签名（校验 Function.prototype.toString、
+  // crypto.subtle.* 是否为原生实现），因此这里绝不能 hook 任何 WebCrypto
+  // 方法，否则解密会静默失败。
+  function isMask(s) {
+    if (!s) return true;
+    // 圆点（U+2022）、间隔点、实心/空心圆、星号、日文中点。
+    return !/[^\\u2022\\u00b7\\u2027\\u25cf\\u25cb\\u002a\\uff65\\u30fb\\s]/.test(s);
+  }
+
+  // 读取站点解密后的明文密码。var 与 let 顶格声明都会成为全局绑定，
+  // let 不挂在 window 上，所以先用裸标识符探测，再退回 window 属性。
+  function sitePwd() {
+    try {
+      if (typeof currentParsePwd === 'string') return currentParsePwd.trim();
+    } catch (e) {}
+    try {
+      if (typeof window.currentParsePwd === 'string') {
+        return window.currentParsePwd.trim();
+      }
+    } catch (e) {}
+    return '';
+  }
+
+  // 取解析密码：优先取页面变量里的明文；变量还没写入时（解密中）
+  // 退回 DOM，但掩码圆点不算密码，避免把「••••」当成结果回传。
   function pickPwd() {
+    var decoded = sitePwd();
+    if (decoded && !isMask(decoded)) return decoded;
     var el = byId('pwdValue') || document.querySelector('.pwd-box .pwd');
     if (!el || hasClass(el, 'empty')) return '';
-    return textOf(el);
+    var txt = textOf(el);
+    if (isMask(txt)) return '';
+    return txt;
   }
 
   // 取结果页的「无密码」提示（同一个元素的 empty 形态）。

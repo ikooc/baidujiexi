@@ -545,7 +545,7 @@ JS 桥名 `TfPwdBridge`，页面本身是单页三步流程，三步 DOM 从加�
 | --- | --- | --- |
 | 1 | `#stepTurnstile` | 用户手动完成 Turnstile 验证 |
 | 2 | `#stepPassword` | 自动填入第一层密码并提交 |
-| 3 | `#stepResult` | 读取 `#pwdValue` 与 UC 口令，通过桥回传 |
+| 3 | `#stepResult` | 读取页面变量 `currentParsePwd` 的明文，通过桥回传 |
 
 关键约束：
 
@@ -557,6 +557,40 @@ JS 桥名 `TfPwdBridge`，页面本身是单页三步流程，三步 DOM 从加�
   自动提交上限 `TS_MAX = 2`、`PWD_MAX = 2`，超出后交给右上角「重新加载」。
 - **Cloudflare 全页挑战识别**：标题含 `Just a moment` / `Attention Required`、
   `#challenge-form`、`Enable JavaScript and cookies to continue` 等 → 通知 App 展示提示。
+
+### 结果页掩码与本地解密（1.2.8 修复）
+
+站点在结果页改成了「只显示掩码」，明文不再出现在 DOM 里：
+
+```js
+var currentParsePwd = '';            // 明文仅存于页面内存
+...
+pwdEl.innerText = '••••••••••';      // #pwdValue 恒为掩码，仅供复制按钮
+```
+
+密码本身由 `POST ?api=get_pwd` 下发**加密 payload**，页面用 WebCrypto 在本地解密：
+
+| 版本 | 密钥派生 |
+| --- | --- |
+| v1 | `SHA256(cs_token + '|' + ts + '|' + PEPPER_PART1 + PEPPER_PART2)` |
+| v2 | `SHA256(cs_token + '|' + ts + '|' + PEPPER2_PART1 + PEPPER2_PART2 + '|' + envSig)` |
+
+`envSig` 是 7 位环境签名，逐项检查 `navigator.webdriver` 与
+`Function.prototype.toString` / `crypto.subtle.digest` / `importKey` / `decrypt` /
+`atob` / `TextDecoder.prototype.decode` 是否为原生实现；页面加载时快照，
+解密时重算比对，不一致就把签名反转 → 派生错误密钥 → **静默解出乱码或失败**。
+
+修复前 `pickPwd()` 直接读 `#pwdValue` 的文本，于是把这串 `••••••••••` 当成解析密码
+回传到 App，界面上就只剩一排黑色圆点。现在的取值顺序：
+
+1. `sitePwd()`：先读页面全局变量 `currentParsePwd`（`var` 与顶层 `let` 都覆盖，
+   `let` 不挂 `window`，故先用裸标识符探测再退回 `window` 属性）；
+2. DOM 兜底：变量尚未写入（解密进行中）时读 `#pwdValue`；
+3. `isMask()`：`•` / `·` / `‣` / `●` / `○` / `*` / `･` / `・` 及空串一律判为掩码，
+   直接返回空，避免把圆点当结果。
+
+因此**绝不能 hook 任何 WebCrypto 方法**（会改变 `Function.prototype.toString`
+与 `crypto.subtle.*` 的原生特征，导致环境签名不一致、解密静默失败）。
 
 抓到的密码会通过 `onPasswordCaptured` 回调**即时**写回首页（用户直接返回也不丢），
 返回时再用页面结果兜底一次。
@@ -678,7 +712,7 @@ flutter test
 
 | 版本 | 主要变更 |
 | --- | --- |
-| 1.2.8 | 当前版本；下载目录假成功修复、引擎连接中断自愈、密码查询页稳定性 |
+| 1.2.8 | 当前版本；下载目录假成功修复、引擎连接中断自愈、密码查询页稳定性；**修复解析密码显示为圆点**（站点改为掩码 + 本地解密，改读 `currentParsePwd`） |
 | 1.2.x | WebView 密码查询（Turnstile 三步流程、老内核降级/升级引导） |
 | 1.1.x | 内嵌 Gopeed 引擎、断点续传、下载任务页、远程配置下发 |
 | 1.1.0 | 首个可用版本：分享链接解析、文件列表、直链下载 |
